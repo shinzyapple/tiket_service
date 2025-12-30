@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>チケットサービス</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+</head>
+
+<body>
+    <div class="container">
+        <!-- 登録フォーム -->
+        <div id="registerForm" class="register-form" style="display: none;">
+            <h2>アカウント登録</h2>
+            <div class="form-group">
+                <label for="username">アカウント名</label>
+                <input type="text" id="username" placeholder="名前を入力してください">
+            </div>
+            <button class="btn btn-primary" onclick="register()" style="width: 100%;">登録</button>
+        </div>
+
+        <!-- ヘッダー -->
+        <div id="header" class="header" style="display: none;">
+            <div class="username" id="displayUsername"></div>
+            <div class="user-id" id="displayUserId"></div>
+        </div>
+
+        <!-- チケット一覧 -->
+        <div id="ticketsContainer" class="tickets-container" style="display: none;">
+            <div id="ticketsList"></div>
+        </div>
+
+        <!-- 購入ボタン -->
+        <button id="purchaseBtn" class="purchase-btn" onclick="purchaseTicket()" style="display: none;">
+            チケットを購入
+        </button>
+    </div>
+
+    <!-- 全画面QR表示 -->
+    <div id="fullscreenQr" class="fullscreen-qr">
+        <button class="close-btn" onclick="closeFullscreen()">×</button>
+        <div id="fullscreenQrContainer" style="display: flex; justify-content: center; align-items: center;"></div>
+    </div>
+
+    <!-- 予約モーダル -->
+    <div id="reservationModal" class="modal">
+        <div class="modal-content">
+            <h3>チケット予約</h3>
+            <div class="form-group">
+                <label for="reservationDate">利用日を選択</label>
+                <input type="date" id="reservationDate" class="date-input">
+            </div>
+            <button class="btn btn-primary" onclick="confirmPurchase()">購入する</button>
+            <button class="btn btn-secondary" onclick="closeReservationModal()">キャンセル</button>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+    <script>
+        let currentUser = null;
+
+        // QRCodeライブラリ読み込み確認
+        window.addEventListener('DOMContentLoaded', () => {
+            console.log('QRCode library loaded:', typeof QRCode !== 'undefined');
+        });
+
+        // ページ読み込み時
+        window.addEventListener('DOMContentLoaded', () => {
+            const savedUser = localStorage.getItem('ticketUser');
+            if (savedUser) {
+                currentUser = JSON.parse(savedUser);
+                showUserPage();
+            } else {
+                document.getElementById('registerForm').style.display = 'block';
+            }
+        });
+
+        // 登録
+        async function register() {
+            const username = document.getElementById('username').value.trim();
+            if (!username) {
+                alert('アカウント名を入力してください');
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/register', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username })
+                });
+
+                const data = await response.json();
+                if (data.success) {
+                    currentUser = {
+                        id: data.user_id,
+                        username: data.username
+                    };
+                    localStorage.setItem('ticketUser', JSON.stringify(currentUser));
+                    document.getElementById('registerForm').style.display = 'none';
+                    showUserPage();
+                }
+            } catch (error) {
+                console.error('登録エラー:', error);
+                alert('登録に失敗しました');
+            }
+        }
+
+        // ユーザーページ表示
+        async function showUserPage() {
+            document.getElementById('header').style.display = 'block';
+            document.getElementById('ticketsContainer').style.display = 'block';
+            document.getElementById('purchaseBtn').style.display = 'block';
+
+            document.getElementById('displayUsername').textContent = currentUser.username;
+            document.getElementById('displayUserId').textContent = `ID: ${currentUser.id.substring(0, 8)}...`;
+
+            await loadTickets();
+        }
+
+        // チケット読み込み
+        async function loadTickets() {
+            try {
+                const response = await fetch(`/api/tickets/${currentUser.id}`);
+                const data = await response.json();
+
+                const ticketsList = document.getElementById('ticketsList');
+
+                if (data.tickets.length === 0) {
+                    ticketsList.innerHTML = `
+                        <div class="empty-state">
+                            <div class="empty-state-icon">🎫</div>
+                            <div class="empty-state-text">チケットがありません</div>
+                        </div>
+                    `;
+                } else {
+                    ticketsList.innerHTML = data.tickets.map(ticket => `
+                        <div class="ticket-card" onclick="showFullscreenQr('${ticket.id}', '${ticket.date}')">
+                            <div class="qr-container">
+                                <div id="qr-${ticket.id}" style="display: flex; justify-content: center;"></div>
+                            </div>
+                            <div class="ticket-info">
+                                <div class="ticket-date">${ticket.date}</div>
+                                <div>タップで拡大表示</div>
+                            </div>
+                        </div>
+                    `).join('');
+
+                    // QRコード生成 - DOMが確実に存在してから実行
+                    setTimeout(() => {
+                        data.tickets.forEach(ticket => {
+                            try {
+                                const qrData = JSON.stringify({
+                                    id: ticket.id,
+                                    date: ticket.date
+                                });
+                                const container = document.getElementById(`qr-${ticket.id}`);
+
+                                console.log('Generating QR for ticket:', ticket.id);
+                                console.log('Container found:', !!container);
+                                console.log('QRCode available:', typeof QRCode);
+
+                                if (container) {
+                                    // 既存の内容をクリア
+                                    container.innerHTML = '';
+
+                                    // QRコード生成
+                                    new QRCode(container, {
+                                        text: qrData,
+                                        width: 200,
+                                        height: 200,
+                                        colorDark: "#000000",
+                                        colorLight: "#ffffff",
+                                        correctLevel: QRCode.CorrectLevel.M
+                                    });
+
+                                    console.log('QR code generated successfully for:', ticket.id);
+                                } else {
+                                    console.error('Container not found for ticket:', ticket.id);
+                                }
+                            } catch (error) {
+                                console.error('QRコード生成エラー:', error, 'Ticket:', ticket.id);
+                            }
+                        });
+                    }, 200);
+                }
+            } catch (error) {
+                console.error('チケット読み込みエラー:', error);
+            }
+        }
+
+        // チケット購入(モーダル表示)
+        function purchaseTicket() {
+            const modal = document.getElementById('reservationModal');
+            const dateInput = document.getElementById('reservationDate');
+
+            // デフォルトで今日の日付を設定
+            const today = new Date().toISOString().split('T')[0];
+            dateInput.value = today;
+            dateInput.min = today; // 過去の日付は選択不可
+
+            modal.classList.add('active');
+        }
+
+        // 予約モーダルを閉じる
+        function closeReservationModal() {
+            document.getElementById('reservationModal').classList.remove('active');
+        }
+
+        // 購入確定
+        async function confirmPurchase() {
+            const selectedDate = document.getElementById('reservationDate').value;
+
+            if (!selectedDate) {
+                alert('日付を選択してください');
+                return;
+            }
+
+            const btn = event.target;
+            const originalText = btn.textContent;
+            btn.innerHTML = '<span class="loading"></span>';
+            btn.disabled = true;
+
+            try {
+                const response = await fetch('/api/purchase', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        user_id: currentUser.id,
+                        username: currentUser.username,
+                        date: selectedDate
+                    })
+                });
+
+                const data = await response.json();
+                if (data.success) {
+                    closeReservationModal();
+                    await loadTickets();
+
+                    // 購入成功エフェクト
+                    showPurchaseEffect();
+                }
+            } catch (error) {
+                console.error('購入エラー:', error);
+                alert('購入に失敗しました');
+            } finally {
+                btn.textContent = originalText;
+                btn.disabled = false;
+            }
+        }
+
+        // 購入成功エフェクト
+        function showPurchaseEffect() {
+            const ticketsList = document.getElementById('ticketsList');
+            const cards = ticketsList.querySelectorAll('.ticket-card');
+            if (cards.length > 0) {
+                const lastCard = cards[cards.length - 1];
+                lastCard.style.animation = 'none';
+                setTimeout(() => {
+                    lastCard.style.animation = 'ticketAppear 0.6s cubic-bezier(0.175, 0.885, 0.32, 1.275)';
+                }, 10);
+            }
+        }
+
+        // 全画面QR表示
+        function showFullscreenQr(ticketId, date) {
+            try {
+                const qrData = JSON.stringify({ id: ticketId, date: date });
+                const container = document.getElementById('fullscreenQrContainer');
+
+                console.log('Showing fullscreen QR for:', ticketId);
+
+                // 既存の内容をクリア
+                container.innerHTML = '';
+
+                // QRコードサイズを計算
+                const qrSize = Math.min(window.innerWidth, window.innerHeight) * 0.8;
+
+                // QRコード生成
+                new QRCode(container, {
+                    text: qrData,
+                    width: qrSize,
+                    height: qrSize,
+                    colorDark: "#000000",
+                    colorLight: "#ffffff",
+                    correctLevel: QRCode.CorrectLevel.M
+                });
+
+                // 全画面表示
+                document.getElementById('fullscreenQr').classList.add('active');
+                console.log('Fullscreen QR displayed');
+            } catch (error) {
+                console.error('全画面QR表示エラー:', error);
+                alert('QRコードの表示に失敗しました');
+            }
+        }
+
+        // 全画面QR閉じる
+        function closeFullscreen() {
+            document.getElementById('fullscreenQr').classList.remove('active');
+        }
+    </script>
+</body>
+
+</html>
