@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport"
+        content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>主催者 - チケット読み取り</title>
+    <link rel="stylesheet" href="/static/organizer.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+</head>
+
+<body>
+    <!-- 認証画面 -->
+    <div id="authContainer" class="auth-container">
+        <div class="auth-box">
+            <h2>🔐 主催者認証</h2>
+            <div class="form-group">
+                <label for="password">パスワード</label>
+                <input type="password" id="password" placeholder="パスワードを入力">
+            </div>
+            <button class="btn btn-primary" onclick="authenticate()">ログイン</button>
+        </div>
+    </div>
+
+    <!-- スキャナー画面 -->
+    <div id="scannerContainer" class="scanner-container">
+        <div class="scanner-header">
+            <div class="scanner-title">チケット読み取り</div>
+            <div class="header-buttons">
+                <button class="icon-btn" onclick="openSettings()" title="設定">⚙️</button>
+            </div>
+        </div>
+
+        <div class="scanner-view">
+            <video id="video" autoplay playsinline></video>
+            <div class="qr-frame">
+                <div class="qr-corner top-left"></div>
+                <div class="qr-corner top-right"></div>
+                <div class="qr-corner bottom-left"></div>
+                <div class="qr-corner bottom-right"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 検証結果オーバーレイ -->
+    <div id="resultOverlay" class="result-overlay">
+        <div class="result-icon" id="resultIcon"></div>
+    </div>
+
+    <!-- 設定モーダル -->
+    <div id="settingsModal" class="modal">
+        <div class="modal-content">
+            <h3>設定</h3>
+            <div class="form-group">
+                <label for="currentPassword">現在のパスワード</label>
+                <input type="password" id="currentPassword">
+            </div>
+            <div class="form-group">
+                <label for="newPassword">新しいパスワード</label>
+                <input type="password" id="newPassword">
+            </div>
+            <button class="btn btn-primary" onclick="changePassword()">パスワード変更</button>
+            <button class="btn btn-secondary" onclick="closeSettings()">閉じる</button>
+        </div>
+    </div>
+
+
+
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+    <audio id="validSound" src="/static/sounds/valid.mp3" preload="auto"></audio>
+    <audio id="invalidSound" src="/static/sounds/invalid.mp3" preload="auto"></audio>
+
+    <script>
+        let video = null;
+        let canvas = null;
+        let canvasContext = null;
+        let scanning = false;
+
+        // 認証
+        async function authenticate() {
+            const password = document.getElementById('password').value;
+
+            try {
+                const response = await fetch('/api/auth/organizer', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password })
+                });
+
+                const data = await response.json();
+                if (data.success) {
+                    document.getElementById('authContainer').style.display = 'none';
+                    document.getElementById('scannerContainer').style.display = 'flex';
+                    startScanner();
+                } else {
+                    alert('パスワードが違います');
+                }
+            } catch (error) {
+                console.error('認証エラー:', error);
+                alert('認証に失敗しました');
+            }
+        }
+
+        // スキャナー開始
+        async function startScanner() {
+            video = document.getElementById('video');
+            canvas = document.createElement('canvas');
+            canvasContext = canvas.getContext('2d');
+
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: 'environment' }
+                });
+                video.srcObject = stream;
+                video.setAttribute('playsinline', true);
+                video.play();
+                scanning = true;
+                requestAnimationFrame(tick);
+            } catch (error) {
+                console.error('カメラエラー:', error);
+                alert('カメラにアクセスできません');
+            }
+        }
+
+        // QRコードスキャン
+        // QRコードスキャン
+        function tick() {
+            if (!scanning) return;
+
+            if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                const scanner = document.querySelector('.scanner-view');
+                const frame = document.querySelector('.qr-frame');
+
+                if (scanner && frame) {
+                    const scannerRect = scanner.getBoundingClientRect();
+                    const frameRect = frame.getBoundingClientRect();
+
+                    // ビデオの表示比率と実際のビデオサイズの比率を計算
+                    // object-fit: cover の挙動をシミュレートして、現在の表示領域に対応するビデオ座標を特定
+                    const ratio = Math.min(
+                        video.videoWidth / scannerRect.width,
+                        video.videoHeight / scannerRect.height
+                    );
+
+                    // 枠のサイズに対応するビデオ上のサイズを計算
+                    const sWidth = frameRect.width * ratio;
+                    const sHeight = frameRect.height * ratio;
+
+                    // 中心から切り出すための開始座標
+                    const sx = (video.videoWidth - sWidth) / 2;
+                    const sy = (video.videoHeight - sHeight) / 2;
+
+                    // キャンバスサイズを切り出しサイズに合わせる
+                    canvas.width = sWidth;
+                    canvas.height = sHeight;
+
+                    // 切り出した領域を描画
+                    canvasContext.drawImage(video, sx, sy, sWidth, sHeight, 0, 0, canvas.width, canvas.height);
+
+                    const imageData = canvasContext.getImageData(0, 0, canvas.width, canvas.height);
+                    const code = jsQR(imageData.data, imageData.width, imageData.height);
+
+                    if (code) {
+                        scanning = false;
+                        verifyTicket(code.data);
+                        return;
+                    }
+                } else {
+                    // フォールバック: 要素が見つからない場合は全体をスキャン
+                    canvas.height = video.videoHeight;
+                    canvas.width = video.videoWidth;
+                    canvasContext.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+                    const imageData = canvasContext.getImageData(0, 0, canvas.width, canvas.height);
+                    const code = jsQR(imageData.data, imageData.width, imageData.height);
+
+                    if (code) {
+                        scanning = false;
+                        verifyTicket(code.data);
+                        return;
+                    }
+                }
+            }
+
+            requestAnimationFrame(tick);
+        }
+
+        // チケット検証
+        async function verifyTicket(qrData) {
+            try {
+                const response = await fetch('/api/verify', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ qr_data: qrData })
+                });
+
+                const data = await response.json();
+                showResult(data.valid);
+            } catch (error) {
+                console.error('検証エラー:', error);
+                showResult(false);
+            }
+        }
+
+        // 結果表示
+        function showResult(isValid) {
+            const overlay = document.getElementById('resultOverlay');
+            const icon = document.getElementById('resultIcon');
+
+            overlay.classList.remove('valid', 'invalid');
+
+            if (isValid) {
+                overlay.classList.add('valid');
+                icon.textContent = '〇';
+                playSound('valid');
+            } else {
+                overlay.classList.add('invalid');
+                icon.textContent = '✕';
+                playSound('invalid');
+            }
+
+            overlay.classList.add('active');
+
+            setTimeout(() => {
+                overlay.classList.remove('active');
+                setTimeout(() => {
+                    scanning = true;
+                    requestAnimationFrame(tick);
+                }, 300);
+            }, 2000);
+        }
+
+        // 音声再生
+        function playSound(type) {
+            const audio = document.getElementById(type + 'Sound');
+            if (audio) {
+                audio.currentTime = 0;
+                audio.play().catch(e => {
+                    console.log('音声再生エラー:', e);
+                });
+            }
+        }
+
+        // 設定モーダル
+        function openSettings() {
+            document.getElementById('settingsModal').classList.add('active');
+        }
+
+        function closeSettings() {
+            document.getElementById('settingsModal').classList.remove('active');
+            document.getElementById('currentPassword').value = '';
+            document.getElementById('newPassword').value = '';
+        }
+
+        // パスワード変更
+        async function changePassword() {
+            const oldPassword = document.getElementById('currentPassword').value;
+            const newPassword = document.getElementById('newPassword').value;
+
+            if (!oldPassword || !newPassword) {
+                alert('両方のフィールドを入力してください');
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/auth/change-password', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ old_password: oldPassword, new_password: newPassword })
+                });
+
+                const data = await response.json();
+                if (data.success) {
+                    alert('パスワードを変更しました');
+                    closeSettings();
+                } else {
+                    alert(data.message);
+                }
+            } catch (error) {
+                console.error('パスワード変更エラー:', error);
+                alert('パスワード変更に失敗しました');
+            }
+        }
+
+
+
+        // Enterキーで認証
+        document.getElementById('password')?.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') authenticate();
+        });
+    </script>
+</body>
+
+</html>
